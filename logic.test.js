@@ -7,6 +7,7 @@ import { SEED, MUSCLES } from './exercises.js';
 import {
   num, today, isValidDate, previousSets, draftToWorkout, workoutToDraft, draftFromDay, isDraft, normalizePlan,
   newCustomExercise, parseMeasurement, exerciseSeries, bodySeries, buildBackup, validateBackup, norm, exName, fmtSet,
+  fmtClock, clampRest,
 } from './logic.js';
 
 test('num', () => {
@@ -21,6 +22,17 @@ test('num', () => {
   assert.equal(num('8', { int: true }), 8);
   assert.equal(fmtSet({ weight: 11.25, reps: 10 }), '11.25 × 10');   // previous weight must show what was lifted
   assert.equal(fmtSet({ weight: null, reps: 12 }), 'BW × 12');
+});
+
+test('rest timer', () => {
+  assert.equal(fmtClock(150), '2:30');
+  assert.equal(fmtClock(5), '0:05');
+  assert.equal(fmtClock(600), '10:00');
+  assert.equal(clampRest(NaN), 150);   // nothing stored yet → 2:30
+  assert.equal(clampRest(0), 150);
+  assert.equal(clampRest(165), 165);
+  assert.equal(clampRest(1), 15);      // rounds to the step, never below 15 s
+  assert.equal(clampRest(3600), 600);
 });
 
 test('dates', () => {

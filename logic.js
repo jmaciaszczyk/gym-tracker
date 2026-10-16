@@ -49,6 +49,12 @@ export function newCustomExercise(name, muscle, custom, { id = 'c-' + uuid(), cr
 }
 
 const clamp = (n, [lo, hi]) => Math.min(hi, Math.max(lo, n));
+
+// Rest timer between sets, in seconds.
+export const REST = { default: 150, step: 15, range: [15, 600] };
+export const clampRest = n => Number.isFinite(n) && n > 0   // 0/NaN = nothing stored (Number(null) is 0)
+  ? clamp(Math.max(1, Math.round(n / REST.step)) * REST.step, REST.range) : REST.default;
+export const fmtClock = sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 export const normalizePlan = p => ({
   id: p.id, name: cleanName(p.name) || 'Untitled plan', createdAt: p.createdAt,
   days: p.days.map((d, i) => ({

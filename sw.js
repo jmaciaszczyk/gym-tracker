@@ -1,5 +1,5 @@
 // BUMP VERSION ON EVERY DEPLOY, or installed apps keep running the old files.
-const VERSION = 'gym-tracker-v1';
+const VERSION = 'gym-tracker-v2';
 const FILES = ['./', 'index.html', 'app.js', 'db.js', 'logic.js', 'exercises.js', 'htm-preact.js', 'barlow-latin.woff2', 'barlow-latin-ext.woff2', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.oninstall = e => {

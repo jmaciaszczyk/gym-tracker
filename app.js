@@ -4,7 +4,7 @@ import { SEED, MUSCLES } from './exercises.js';
 import {
   STORES, LIMITS, MEASURES, num, inRange, cleanName, norm, today, parseDate, dayNumber, fmtNum, fmtSet, exName,
   newCustomExercise, normalizePlan, previousSets, draftFromDay, workoutToDraft, isDraft, draftToWorkout,
-  parseMeasurement, exerciseSeries, bodySeries, buildBackup, validateBackup,
+  parseMeasurement, exerciseSeries, bodySeries, buildBackup, validateBackup, REST, clampRest, fmtClock,
 } from './logic.js';
 
 // ---------- state ----------
@@ -29,6 +29,59 @@ const LS = {
 function loadDraft() { try { const d = JSON.parse(LS.get('draft')); return isDraft(d) ? d : null; } catch { return null; } }
 function setDraft(d) { draft = d; draftSaved = LS.set('draft', JSON.stringify(d)); rerender(); }
 function clearDraft() { draft = null; draftSaved = true; LS.del('draft'); rerender(); }
+
+// Rest timer: one countdown at a time. Its end time is stored, so it survives reloads, app switches and a locked screen.
+let restSec = clampRest(Number(LS.get('rest')));
+let restEnd = Number(LS.get('restEnd')) || 0;
+let audio, wakeLock = null, firedFor = 0;
+const unlockAudio = () => { try { audio ??= new AudioContext(); audio.resume(); } catch {} };   // works only inside a tap/keystroke on iOS
+
+function startRest() {
+  restEnd = Date.now() + restSec * 1000;
+  LS.set('restEnd', String(restEnd));
+  unlockAudio();
+  keepAwake(true);
+  rerender();
+}
+// Runs on every screen, so the alert also fires when the user went to look at History mid-rest.
+function restTick() {
+  if (!restEnd) return;
+  const late = Date.now() - restEnd;
+  if (late >= 0 && firedFor !== restEnd) { firedFor = restEnd; if (late < 5000) beep(); keepAwake(false); }   // no stale beep after a long absence
+  if (late >= 10000) stopRest();   // "Rest over" stays up for 10 s
+}
+function stopRest() { restEnd = 0; LS.del('restEnd'); keepAwake(false); rerender(); }
+function adjustRest(d) {
+  if (restEnd > Date.now()) { restEnd = Math.max(Date.now() + 1000, restEnd + d * 1000); LS.set('restEnd', String(restEnd)); }
+  else {   // idle: ±15 edits the default (and dismisses "Rest over" so the new value shows)
+    restSec = clampRest(restSec + d); LS.set('rest', String(restSec));
+    restEnd = 0; LS.del('restEnd');
+  }
+  rerender();
+}
+async function keepAwake(on) {   // screen stays on while resting, so the countdown and the beep aren't lost
+  try {
+    if (!on) { const w = wakeLock; wakeLock = null; await w?.release(); }
+    else if (!wakeLock && navigator.wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch { wakeLock = null; }
+}
+function beep() {
+  navigator.vibrate?.([200, 100, 200]);
+  try {
+    for (const [t, f] of [[0, 880], [0.25, 880], [0.5, 1320]]) {
+      const o = audio.createOscillator(), g = audio.createGain(), at = audio.currentTime + t;
+      o.frequency.value = f;
+      o.connect(g).connect(audio.destination);
+      g.gain.setValueAtTime(0.3, at);
+      g.gain.exponentialRampToValueAtTime(0.001, at + 0.2);
+      o.start(at);
+      o.stop(at + 0.2);
+    }
+  } catch {}   // no AudioContext yet (e.g. after a reload): vibration and the on-screen message still work
+}
 
 function showBanner(msg, reload = false) { banner = { msg, reload }; rerender(); }
 const failed = e => showBanner(`Save failed (${e?.message || e}). Export your data now.`);
@@ -57,7 +110,7 @@ function plateOf(planId, dayId) {
   const i = data.plans.find(p => p.id === planId)?.days.findIndex(d => d.id === dayId) ?? -1;
   return i >= 0 ? plate(i) : 'var(--line)';
 }
-const confirmDiscard = () => confirm(`Discard unfinished workout "${draft.dayName}" from ${fmtDate(draft.date)}?`);
+const confirmDiscard = () => confirm(`Discard unfinished workout "${draft.dayName}" from ${fmtDate(draft.date)}?`) && (stopRest(), true);
 
 // ---------- exercise picker ----------
 const pickExercise = () => new Promise(resolve => { picker = { resolve }; rerender(); });
@@ -262,6 +315,28 @@ function ExerciseCard({ entry, ei, prev, onSet, onCopy, onAddSet }) {
   </section>`;
 }
 
+function RestTimer() {
+  const [, tick] = useState(0);
+  const now = Date.now(), running = restEnd > now, left = Math.ceil((restEnd - now) / 1000);
+  const done = !running && restEnd > 0;   // restTick clears restEnd 10 s after the end
+  useEffect(() => {   // display only; completion is handled by restTick
+    if (!restEnd) return;
+    const id = setInterval(() => tick(t => t + 1), 250);
+    return () => clearInterval(id);
+  }, [restEnd]);
+  return html`<div class=${'rest' + (running ? ' running' : done ? ' done' : '')} role="group" aria-label="Rest timer">
+    <button class="step" aria-label="−15 seconds" disabled=${!running && restSec <= REST.range[0]} onClick=${() => adjustRest(-REST.step)}>−15</button>
+    <button class="rest-main" onClick=${running ? stopRest : startRest}
+      aria-label=${running ? `Stop rest, ${fmtClock(left)} left` : done ? `Rest over, start again, ${fmtClock(restSec)}` : `Start rest, ${fmtClock(restSec)}`}>
+      ${running
+        ? html`<span class="clock" role="timer">${fmtClock(left)}</span><small>Stop</small>`
+        : html`<span class="clock">${done ? 'Rest over' : fmtClock(restSec)}</span><small>${done ? 'Start again' : 'Start rest'}</small>`}
+    </button>
+    <button class="step" aria-label="+15 seconds" disabled=${!running && restSec >= REST.range[1]} onClick=${() => adjustRest(REST.step)}>+15</button>
+    <span class="sr" aria-live="polite">${done ? 'Rest over' : running ? '' : `Rest ${fmtClock(restSec)}`}</span>
+  </div>`;
+}
+
 function Logger() {
   const [msg, setMsg] = useState('');
   const d = draft, editing = !!d.workoutId;
@@ -281,11 +356,18 @@ function Logger() {
     try { await save('workouts', workout); } catch { return; }   // draft is kept when the write fails
     go(editing ? '#/workout/' + workout.id : '#/history');
     clearDraft();
+    if (!editing) stopRest();
   }
   function discard() {
     if (!confirm(editing ? 'Discard your changes to this workout?' : 'Discard this workout? Nothing will be saved.')) return;
     go(editing ? '#/workout/' + draft.workoutId : '#/');
     clearDraft();
+    if (!editing) stopRest();
+  }
+  function setValue(ei, si, k, v) {
+    const was = draft.entries[ei].sets[si][k];
+    change(x => { x.entries[ei].sets[si][k] = v; });
+    if (!editing && k === 'r' && !was.trim() && v.trim()) startRest();   // reps entered = set done
   }
 
   return html`<div class="bar"><a href="#/">‹ Train</a>${editing && html`<span class="muted">Editing workout</span>`}</div>
@@ -296,10 +378,11 @@ function Logger() {
     ${!draftSaved && html`<p class="notice warn" role="alert">Draft not autosaving. Don't close the app before finishing.</p>`}
     ${d.entries.map((e, ei) => html`<${ExerciseCard} entry=${e} ei=${ei}
       prev=${previousSets(data.workouts, e.exerciseId, { id: d.workoutId, date: d.date, createdAt: d.createdAt })}
-      onSet=${(si, k, v) => change(x => { x.entries[ei].sets[si][k] = v; })}
+      onSet=${(si, k, v) => setValue(ei, si, k, v)}
       onCopy=${(si, p) => change(x => { x.entries[ei].sets[si] = { w: p.weight == null ? '' : String(p.weight), r: String(p.reps) }; })}
       onAddSet=${() => change(x => { x.entries[ei].sets.push({ w: '', r: '' }); })} />`)}
     <div class="finish">
+      ${!editing && html`<${RestTimer} />`}
       ${msg && html`<p class="err" role="alert">${msg}</p>`}
       <button class="primary" onClick=${finish}>${editing ? 'Save changes' : 'Finish workout'}</button>
     </div>
@@ -614,6 +697,11 @@ async function boot() {
   draft = loadDraft();
   // Registered before the first render: a redirect from the first render fires hashchange before any effect would run.
   addEventListener('hashchange', () => { scrollTo(0, 0); rerender(); });
+  // The browser drops the wake lock whenever the app is hidden; take it back if a rest is still running.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && restEnd > Date.now()) keepAwake(true); });
+  // After a reload (iOS often kills a backgrounded app) the AudioContext is gone; the next tap brings the beep back.
+  for (const t of ['touchend', 'click']) addEventListener(t, () => { if (restEnd) unlockAudio(); }, true);
+  setInterval(restTick, 250);
   render(html`<${App} />`, root);
   navigator.storage?.persisted?.().then(p => p || navigator.storage.persist()).catch(() => {});
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
